@@ -16,6 +16,7 @@ import {CompanionRuntime, type CompanionChannelProjection, type GoogleCredential
 import {KeychainCompanionSessionStore} from './src/auth/SecureSessionStore';
 import type {CompanionNotificationPreferences, CurrentUser} from './src/api/CompanionApi';
 import type {NativeNotificationAdapter} from './src/notifications/FirebaseNotificationAdapter';
+import {notificationCopy} from './src/notifications/CompanionNotificationPolicy';
 
 export type CompanionAppProps = {
   apiBaseUrl?: string;
@@ -38,8 +39,10 @@ function AppContent({apiBaseUrl, googleCredentialProvider, notificationAdapter}:
   const [currentUser, setCurrentUser] = useState<CurrentUser | undefined>();
   const [projection, setProjection] = useState<CompanionChannelProjection | undefined>();
   const [runtimeError, setRuntimeError] = useState(false);
+  const [notificationNotice, setNotificationNotice] = useState<string | undefined>();
   const [notificationPreferences, setNotificationPreferences] = useState<CompanionNotificationPreferences | undefined>();
   const projectionRequest = useRef(0);
+  const notificationNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const runtime = useMemo(() => {
     if (!apiBaseUrl || !googleCredentialProvider) return null;
     return new CompanionRuntime(apiBaseUrl, new KeychainCompanionSessionStore(), googleCredentialProvider);
@@ -81,6 +84,23 @@ function AppContent({apiBaseUrl, googleCredentialProvider, notificationAdapter}:
       runtime.api.registerNotificationDevice(registration.platform, registration.token).catch(() => undefined);
     });
   }, [runtime, currentUser, notificationPreferences, notificationAdapter]);
+
+  useEffect(() => {
+    if (!runtime || !currentUser || !notificationAdapter || !notificationPreferences
+      || !(notificationPreferences.connectionAlerts || notificationPreferences.securityAlerts || notificationPreferences.actionFailures)) return;
+    return notificationAdapter.onForegroundMessage(notification => {
+      setNotificationNotice(notificationCopy(notification));
+      if (notificationNoticeTimer.current) clearTimeout(notificationNoticeTimer.current);
+      notificationNoticeTimer.current = setTimeout(() => {
+        setNotificationNotice(undefined);
+        notificationNoticeTimer.current = undefined;
+      }, 8_000);
+    });
+  }, [runtime, currentUser, notificationPreferences, notificationAdapter]);
+
+  useEffect(() => () => {
+    if (notificationNoticeTimer.current) clearTimeout(notificationNoticeTimer.current);
+  }, []);
 
   const signIn = runtime
     ? async () => {
@@ -145,6 +165,7 @@ function AppContent({apiBaseUrl, googleCredentialProvider, notificationAdapter}:
         notificationPreferences={notificationPreferences}
         onUpdateNotificationPreferences={updateNotificationPreferences}
       />
+      {notificationNotice && <Text accessibilityRole="alert" style={styles.notificationText}>{notificationNotice}</Text>}
       {runtimeError && <Text accessibilityRole="alert" style={styles.errorText}>We could not connect securely. Check your connection and try again.</Text>}
     </SafeAreaView>
   );
@@ -158,6 +179,12 @@ const styles = StyleSheet.create({
     color: '#a61b1b',
     paddingHorizontal: 24,
     paddingBottom: 16,
+    textAlign: 'center',
+  },
+  notificationText: {
+    color: '#1B3A8A',
+    paddingHorizontal: 24,
+    paddingBottom: 8,
     textAlign: 'center',
   },
 });
