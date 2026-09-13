@@ -58,6 +58,12 @@ test('uses the documented Companion state route and bearer header', async () => 
       overlayConnected: true,
       pendingAlerts: 2,
       lastUpdatedAt: '2026-08-15T00:00:00.000Z',
+      helperPaired: false,
+      obsConnected: false,
+      obsStatusReportedAt: null,
+      paymentAccountConnected: false,
+      mirrorReachable: false,
+      streamPaired: false,
     }),
   );
   const api = new CompanionApi({
@@ -104,6 +110,12 @@ test('rejects non-contract identifiers and unknown response fields', async () =>
     overlayConnected: true,
     pendingAlerts: 0,
     lastUpdatedAt: '2026-08-15T00:00:00.000Z',
+    helperPaired: false,
+    obsConnected: false,
+    obsStatusReportedAt: null,
+    paymentAccountConnected: false,
+    mirrorReachable: false,
+    streamPaired: false,
     internalSecret: 'must-not-reach-ui',
   }));
   const api = new CompanionApi({
@@ -366,4 +378,84 @@ test('rejects invalid control-session inputs before network access', async () =>
   await expect(api.revokeControlSession('channel-1', 'not-a-uuid'))
     .rejects.toThrow('Invalid Companion control session id');
   expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+// --- L24 companion action catalogue -----------------------------------
+
+test('accepts a well-formed OBS layout slot with a targetLabel and rejects one without', async () => {
+  const withLabel = jest.fn(async () => response(200, {
+    schemaVersion: 'v1', channelId: CHANNEL_ID, version: 1, tier: 'creator', maxSlots: 32,
+    pageSize: 8,
+    slots: [{slotIndex: 1, page: 1, label: 'Scene', action: 'obs_set_scene', targetId: CHANNEL_ID, targetLabel: 'Main Scene'}],
+    createdAt: null,
+  }));
+  const api = new CompanionApi({baseUrl: 'https://api.example.test', getAccessToken: async () => 'opaque-test-token', fetchImpl: withLabel});
+  await expect(api.getCompanionLayout(CHANNEL_ID)).resolves.toMatchObject({
+    slots: [expect.objectContaining({action: 'obs_set_scene', targetLabel: 'Main Scene'})],
+  });
+
+  const withoutLabel = jest.fn(async () => response(200, {
+    schemaVersion: 'v1', channelId: CHANNEL_ID, version: 1, tier: 'creator', maxSlots: 32,
+    pageSize: 8,
+    slots: [{slotIndex: 1, page: 1, label: 'Scene', action: 'obs_set_scene', targetId: CHANNEL_ID}],
+    createdAt: null,
+  }));
+  const apiNoLabel = new CompanionApi({baseUrl: 'https://api.example.test', getAccessToken: async () => 'opaque-test-token', fetchImpl: withoutLabel});
+  await expect(apiNoLabel.getCompanionLayout(CHANNEL_ID)).rejects.toEqual(new CompanionApiError(200, 'request_failed'));
+});
+
+test('rejects an Alerts layout slot that carries a targetLabel', async () => {
+  const fetchImpl = jest.fn(async () => response(200, {
+    schemaVersion: 'v1', channelId: CHANNEL_ID, version: 1, tier: 'creator', maxSlots: 32,
+    pageSize: 8,
+    slots: [{slotIndex: 1, page: 1, label: 'Pause', action: 'pause_queue', targetId: QUEUE_ID, targetLabel: 'nope'}],
+    createdAt: null,
+  }));
+  const api = new CompanionApi({baseUrl: 'https://api.example.test', getAccessToken: async () => 'opaque-test-token', fetchImpl});
+  await expect(api.getCompanionLayout(CHANNEL_ID)).rejects.toEqual(new CompanionApiError(200, 'request_failed'));
+});
+
+test('executeAction sends an OBS action with its targetLabel and rejects one missing it, before network access', async () => {
+  const fetchImpl = jest.fn(async () => response(202, {
+    schemaVersion: 'v1', commandId: '00000000-0000-4000-8000-000000000031', status: 'accepted', acceptedAt: '2026-09-06T10:00:00.000Z',
+  }));
+  const api = new CompanionApi({baseUrl: 'https://api.example.test', getAccessToken: async () => 'opaque-test-token', fetchImpl});
+
+  // Every OBS-group action requires a targetLabel at this (server-matching)
+  // layer, even one the desktop mapper does not ultimately need (e.g.
+  // obs_start_stream) -- the server's target-shape rule is per-group, not
+  // per-action, so the client mirrors that coarser, safer rule.
+  await expect(api.executeAction(CHANNEL_ID, 'obs_start_stream', 'idempotency-key-obs-001', CHANNEL_ID, 'Main Scene'))
+    .resolves.toMatchObject({status: 'accepted'});
+  expect(fetchImpl).toHaveBeenLastCalledWith(
+    expect.any(String),
+    expect.objectContaining({body: JSON.stringify({action: 'obs_start_stream', targetId: CHANNEL_ID, targetLabel: 'Main Scene'})}),
+  );
+
+  expect(() => api.executeAction(CHANNEL_ID, 'obs_set_scene', 'idempotency-key-obs-002', CHANNEL_ID))
+    .toThrow('OBS actions require a targetLabel naming the scene/source/input/transition');
+});
+
+test('executeAction rejects an Alerts action carrying a targetLabel, before network access', () => {
+  const fetchImpl = jest.fn();
+  const api = new CompanionApi({baseUrl: 'https://api.example.test', getAccessToken: async () => 'opaque-test-token', fetchImpl});
+  expect(() => api.executeAction(CHANNEL_ID, 'pause_queue', 'idempotency-key-003', QUEUE_ID, 'nope'))
+    .toThrow('Alerts actions do not take a targetLabel');
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+test('the mobile action catalogue has exactly 17 actions matching the server allowlist, grouped correctly', () => {
+  const {companionActionGroup} = jest.requireActual('./CompanionApi');
+  const expected: Record<string, string> = {
+    pause_queue: 'alerts', resume_queue: 'alerts', send_test_alert: 'alerts',
+    obs_set_scene: 'obs', obs_toggle_source: 'obs', obs_toggle_mute: 'obs',
+    obs_start_stream: 'obs', obs_stop_stream: 'obs', obs_start_record: 'obs', obs_stop_record: 'obs',
+    obs_save_replay_buffer: 'obs', obs_set_transition: 'obs',
+    mirror_start: 'mirror', mirror_stop: 'mirror', mirror_screenshot: 'mirror',
+    stream_go_live: 'stream', stream_end: 'stream',
+  };
+  expect(Object.keys(expected)).toHaveLength(17);
+  for (const [action, group] of Object.entries(expected)) {
+    expect(companionActionGroup(action)).toBe(group);
+  }
 });

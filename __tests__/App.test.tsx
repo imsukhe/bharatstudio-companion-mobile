@@ -41,6 +41,12 @@ test('signed-in shell renders server state and only exposes bounded queue action
           overlayConnected: true,
           pendingAlerts: 3,
           lastUpdatedAt: '2026-08-15T00:00:00.000Z',
+          helperPaired: false,
+          obsConnected: false,
+          obsStatusReportedAt: null,
+          paymentAccountConnected: false,
+          mirrorReachable: false,
+          streamPaired: false,
         }}
         companionQueues={[{
           schemaVersion: 'v1',
@@ -86,6 +92,12 @@ test('signed-in shell lets a multi-channel account select the channel whose stat
           overlayConnected: false,
           pendingAlerts: 0,
           lastUpdatedAt: '2026-08-15T00:00:00.000Z',
+          helperPaired: false,
+          obsConnected: false,
+          obsStatusReportedAt: null,
+          paymentAccountConnected: false,
+          mirrorReachable: false,
+          streamPaired: false,
         }}
         onSelectChannel={channelId => selected.push(channelId)}
       />,
@@ -106,7 +118,7 @@ test('signed-in shell never enables queue actions without an active target', asy
     rendered = ReactTestRenderer.create(
       <CompanionShell
         currentUser={{schemaVersion: 'v1', userId: 'user-1', channels: [{channelId: 'channel-1', role: 'operator'}]}}
-        companionState={{schemaVersion: 'v1', channelId: 'channel-1', overlayConnected: true, pendingAlerts: 1, lastUpdatedAt: '2026-08-15T00:00:00.000Z'}}
+        companionState={{schemaVersion: 'v1', channelId: 'channel-1', overlayConnected: true, pendingAlerts: 1, lastUpdatedAt: '2026-08-15T00:00:00.000Z', helperPaired: false, obsConnected: false, obsStatusReportedAt: null, paymentAccountConnected: false, mirrorReachable: false, streamPaired: false}}
         companionQueues={[]}
         onAction={action}
       />,
@@ -124,7 +136,7 @@ test('signed-in shell ignores stale state and queues from another channel', asyn
     rendered = ReactTestRenderer.create(
       <CompanionShell
         currentUser={{schemaVersion: 'v1', userId: 'user-1', channels: [{channelId: 'channel-a', role: 'operator'}]}}
-        companionState={{schemaVersion: 'v1', channelId: 'channel-b', overlayConnected: true, pendingAlerts: 99, lastUpdatedAt: '2026-08-15T00:00:00.000Z'}}
+        companionState={{schemaVersion: 'v1', channelId: 'channel-b', overlayConnected: true, pendingAlerts: 99, lastUpdatedAt: '2026-08-15T00:00:00.000Z', helperPaired: false, obsConnected: false, obsStatusReportedAt: null, paymentAccountConnected: false, mirrorReachable: false, streamPaired: false}}
         companionQueues={[{
           schemaVersion: 'v1',
           queueId: 'queue-b',

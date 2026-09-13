@@ -5,10 +5,12 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import {useState} from 'react';
-import type {CompanionAccountSession, CompanionAction, CompanionAlertHistory, CompanionBilling, CompanionNotificationPreferences, CompanionQueue, CompanionState, CurrentUser} from './api/CompanionApi';
+import type {CompanionAccountSession, CompanionAction, CompanionActionGroup, CompanionAlertHistory, CompanionBilling, CompanionModerationResult, CompanionNotificationPreferences, CompanionPaymentStatusView, CompanionQueue, CompanionRecentTipsView, CompanionState, CompanionTestReport, CurrentUser} from './api/CompanionApi';
+import {companionHealthSignals} from './api/CompanionApi';
 
 type CompanionScreen = 'home' | 'activity' | 'health' | 'settings' | 'sessions' | 'help';
 
@@ -17,7 +19,7 @@ type CompanionShellProps = {
   currentUser?: CurrentUser;
   companionState?: CompanionState;
   companionQueues?: CompanionQueue[];
-  onAction?: (action: CompanionAction, targetId: string) => void;
+  onAction?: (action: CompanionAction, targetId: string, targetLabel?: string) => void;
   onSelectChannel?: (channelId: string) => void;
   selectedQueueId?: string;
   onSelectQueue?: (queueId: string) => void;
@@ -27,11 +29,32 @@ type CompanionShellProps = {
   onRevokeSession?: (sessionId: string) => void;
   notificationPreferences?: CompanionNotificationPreferences;
   onUpdateNotificationPreferences?: (preferences: Omit<CompanionNotificationPreferences, 'schemaVersion'>) => void;
+  /**
+   * L24 entitlement layer: which action groups the server has said this
+   * channel may use at all (server-authoritative; this prop is a rendering
+   * convenience, never authority -- every action still goes through
+   * companion.ts's own gate). Defaults to `['alerts']` so a host that has
+   * not yet wired the entitlement fetch never renders an OBS/Mirror/Stream
+   * control that would just be rejected server-side.
+   */
+  companionActionGroups?: CompanionActionGroup[];
+  // L07 remaining feature list (master plan 7.11 items 2, 5, 6-10). All
+  // optional and default to an inert/hidden state so a host that has not
+  // yet wired these callbacks/props never renders a control that would
+  // just fail -- same convention as onAction/companionActionGroups above.
+  onMuteTts?: (queueId: string, muted: boolean) => void;
+  onCancelTts?: (deliveryId: string) => void;
+  onRunFullTest?: (queueId: string) => void;
+  fullTestReport?: CompanionTestReport;
+  onModerate?: (eventId: string, action: 'approve' | 'suppress', reason?: string) => void;
+  paymentStatus?: CompanionPaymentStatusView;
+  recentTips?: CompanionRecentTipsView;
+  lastModerationResult?: CompanionModerationResult;
 };
 
-export function CompanionShell({onSignIn, currentUser, companionState, companionQueues, onAction, onSelectChannel, selectedQueueId, onSelectQueue, history, billing, sessions, onRevokeSession, notificationPreferences, onUpdateNotificationPreferences}: CompanionShellProps) {
+export function CompanionShell({onSignIn, currentUser, companionState, companionQueues, onAction, onSelectChannel, selectedQueueId, onSelectQueue, history, billing, sessions, onRevokeSession, notificationPreferences, onUpdateNotificationPreferences, companionActionGroups, onMuteTts, onCancelTts, onRunFullTest, fullTestReport, onModerate, paymentStatus, recentTips, lastModerationResult}: CompanionShellProps) {
   if (currentUser) {
-    return <SignedInShell user={currentUser} state={companionState} queues={companionQueues} onAction={onAction} onSelectChannel={onSelectChannel} selectedQueueId={selectedQueueId} onSelectQueue={onSelectQueue} history={history} billing={billing} sessions={sessions} onRevokeSession={onRevokeSession} notificationPreferences={notificationPreferences} onUpdateNotificationPreferences={onUpdateNotificationPreferences} />;
+    return <SignedInShell user={currentUser} state={companionState} queues={companionQueues} onAction={onAction} onSelectChannel={onSelectChannel} selectedQueueId={selectedQueueId} onSelectQueue={onSelectQueue} history={history} billing={billing} sessions={sessions} onRevokeSession={onRevokeSession} notificationPreferences={notificationPreferences} onUpdateNotificationPreferences={onUpdateNotificationPreferences} companionActionGroups={companionActionGroups} onMuteTts={onMuteTts} onCancelTts={onCancelTts} onRunFullTest={onRunFullTest} fullTestReport={fullTestReport} onModerate={onModerate} paymentStatus={paymentStatus} recentTips={recentTips} lastModerationResult={lastModerationResult} />;
   }
 
   const signInAvailable = typeof onSignIn === 'function';
@@ -108,11 +131,20 @@ function SignedInShell({
   onRevokeSession,
   notificationPreferences,
   onUpdateNotificationPreferences,
+  companionActionGroups = ['alerts'],
+  onMuteTts,
+  onCancelTts,
+  onRunFullTest,
+  fullTestReport,
+  onModerate,
+  paymentStatus,
+  recentTips,
+  lastModerationResult,
 }: {
   user: CurrentUser;
   state?: CompanionState;
   queues?: CompanionQueue[];
-  onAction?: (action: CompanionAction, targetId: string) => void;
+  onAction?: (action: CompanionAction, targetId: string, targetLabel?: string) => void;
   onSelectChannel?: (channelId: string) => void;
   selectedQueueId?: string;
   onSelectQueue?: (queueId: string) => void;
@@ -122,8 +154,22 @@ function SignedInShell({
   onRevokeSession?: (sessionId: string) => void;
   notificationPreferences?: CompanionNotificationPreferences;
   onUpdateNotificationPreferences?: (preferences: Omit<CompanionNotificationPreferences, 'schemaVersion'>) => void;
+  companionActionGroups?: CompanionActionGroup[];
+  onMuteTts?: (queueId: string, muted: boolean) => void;
+  onCancelTts?: (deliveryId: string) => void;
+  onRunFullTest?: (queueId: string) => void;
+  fullTestReport?: CompanionTestReport;
+  onModerate?: (eventId: string, action: 'approve' | 'suppress', reason?: string) => void;
+  paymentStatus?: CompanionPaymentStatusView;
+  recentTips?: CompanionRecentTipsView;
+  lastModerationResult?: CompanionModerationResult;
 }) {
   const [activeScreen, setActiveScreen] = useState<CompanionScreen>('home');
+  const [obsSceneInput, setObsSceneInput] = useState('');
+  const [moderationReasons, setModerationReasons] = useState<Record<string, string>>({});
+  const [cancelDeliveryInput, setCancelDeliveryInput] = useState('');
+  const obsEntitled = companionActionGroups.includes('obs');
+  const ttsEntitled = companionActionGroups.includes('alerts');
   const stateChannelIsAuthorized = Boolean(state && user.channels.some(candidate => candidate.channelId === state.channelId));
   const selectedChannelId = stateChannelIsAuthorized ? state?.channelId : user.channels[0]?.channelId;
   const channel = user.channels.find(candidate => candidate.channelId === selectedChannelId);
@@ -134,6 +180,11 @@ function SignedInShell({
   const canTargetQueue = Boolean(selectedQueue?.active);
   const canOperateQueue = canOperate && canTargetQueue;
   const status = selectedState?.overlayConnected ? 'Connected' : 'Waiting for overlay';
+  // Item 6-7: moderation follows the server's own role scope for donor
+  // content (0039: owner/admin/operator/moderator), not the narrower
+  // owner/admin/operator queue-operate scope above -- a moderator can
+  // approve/reject alert content without being able to pause the queue.
+  const canModerate = channel ? ['owner', 'admin', 'operator', 'moderator'].includes(channel.role) : false;
 
   return (
     <ScrollView
@@ -225,7 +276,7 @@ function SignedInShell({
             accessibilityLabel="Pause alert queue"
             accessibilityState={{disabled: !canOperateQueue}}
             disabled={!canOperateQueue}
-            onPress={() => selectedQueue && onAction?.('pause_queue', selectedQueue.queueId)}
+            onPress={() => canOperateQueue && selectedQueue && onAction?.('pause_queue', selectedQueue.queueId)}
             style={({pressed}) => [styles.secondaryButton, !canOperateQueue && styles.disabledSecondaryButton, pressed && canOperateQueue && styles.pressedButton]}>
             <Text style={styles.secondaryButtonText}>Pause queue</Text>
           </Pressable>
@@ -234,13 +285,76 @@ function SignedInShell({
             accessibilityLabel="Resume alert queue"
             accessibilityState={{disabled: !canOperateQueue}}
             disabled={!canOperateQueue}
-            onPress={() => selectedQueue && onAction?.('resume_queue', selectedQueue.queueId)}
+            onPress={() => canOperateQueue && selectedQueue && onAction?.('resume_queue', selectedQueue.queueId)}
             style={({pressed}) => [styles.secondaryButton, !canOperateQueue && styles.disabledSecondaryButton, pressed && canOperateQueue && styles.pressedButton]}>
             <Text style={styles.secondaryButtonText}>Resume queue</Text>
           </Pressable>
         </View>
+        <View style={styles.controlRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Send a test alert"
+            accessibilityState={{disabled: !canOperateQueue}}
+            disabled={!canOperateQueue}
+            onPress={() => canOperateQueue && selectedQueue && onAction?.('send_test_alert', selectedQueue.queueId)}
+            style={({pressed}) => [styles.secondaryButton, !canOperateQueue && styles.disabledSecondaryButton, pressed && canOperateQueue && styles.pressedButton]}>
+            <Text style={styles.secondaryButtonText}>Send test alert</Text>
+          </Pressable>
+        </View>
         {!canOperate && <Text style={styles.helperText}>Your role can view state but cannot operate the queue.</Text>}
         {canOperate && !canTargetQueue && <Text style={styles.helperText}>Queue controls appear after an active queue is loaded.</Text>}
+      </View>}
+
+      {activeScreen === 'home' && <View style={styles.card} accessibilityRole="summary">
+        <Text style={styles.cardTitle}>OBS Controls</Text>
+        <Text style={styles.cardBody}>
+          Available regardless of your Alerts plan -- a paired desktop
+          helper relays these to OBS. Not gated on the alert queue above.
+        </Text>
+        {!obsEntitled && (
+          <Text style={styles.helperText}>
+            OBS controls are not enabled for this account yet.
+          </Text>
+        )}
+        <View style={styles.controlRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Start OBS stream"
+            accessibilityState={{disabled: !obsEntitled}}
+            disabled={!obsEntitled}
+            onPress={() => obsEntitled && channel && onAction?.('obs_start_stream', channel.channelId)}
+            style={({pressed}) => [styles.secondaryButton, !obsEntitled && styles.disabledSecondaryButton, pressed && obsEntitled && styles.pressedButton]}>
+            <Text style={styles.secondaryButtonText}>Start stream</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Stop OBS stream"
+            accessibilityState={{disabled: !obsEntitled}}
+            disabled={!obsEntitled}
+            onPress={() => obsEntitled && channel && onAction?.('obs_stop_stream', channel.channelId)}
+            style={({pressed}) => [styles.secondaryButton, !obsEntitled && styles.disabledSecondaryButton, pressed && obsEntitled && styles.pressedButton]}>
+            <Text style={styles.secondaryButtonText}>Stop stream</Text>
+          </Pressable>
+        </View>
+        <View style={styles.controlRow}>
+          <TextInput
+            accessibilityLabel="OBS scene name"
+            placeholder="Scene name"
+            editable={obsEntitled}
+            value={obsSceneInput}
+            onChangeText={setObsSceneInput}
+            style={styles.textInput}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Set OBS scene"
+            accessibilityState={{disabled: !obsEntitled || obsSceneInput.length === 0}}
+            disabled={!obsEntitled || obsSceneInput.length === 0}
+            onPress={() => obsEntitled && obsSceneInput.length > 0 && channel && onAction?.('obs_set_scene', channel.channelId, obsSceneInput)}
+            style={({pressed}) => [styles.secondaryButton, (!obsEntitled || obsSceneInput.length === 0) && styles.disabledSecondaryButton, pressed && obsEntitled && obsSceneInput.length > 0 && styles.pressedButton]}>
+            <Text style={styles.secondaryButtonText}>Set scene</Text>
+          </Pressable>
+        </View>
       </View>}
 
       {activeScreen === 'home' && <View style={styles.grid}>
@@ -250,18 +364,163 @@ function SignedInShell({
         <InfoCard title="Plan" body={billing?.tier ?? 'Server projection pending'} />
       </View>}
 
+      {/* Item 2 (run full test) and item 5 (mute upcoming / cancel currently-
+          playing TTS -- two distinct operations, two distinct controls). */}
+      {activeScreen === 'home' && <View style={styles.card} accessibilityRole="summary">
+        <Text style={styles.cardTitle}>Alerts test &amp; TTS</Text>
+        <Text style={styles.cardBody}>
+          Run full test exercises the alert pipeline end-to-end and reports
+          each hop. Mute affects future TTS on this queue; cancel stops only
+          the one delivery you name -- they are not the same control.
+        </Text>
+        <View style={styles.controlRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Run full test"
+            accessibilityState={{disabled: !canOperateQueue}}
+            disabled={!canOperateQueue}
+            onPress={() => canOperateQueue && selectedQueue && onRunFullTest?.(selectedQueue.queueId)}
+            style={({pressed}) => [styles.secondaryButton, !canOperateQueue && styles.disabledSecondaryButton, pressed && canOperateQueue && styles.pressedButton]}>
+            <Text style={styles.secondaryButtonText}>Run full test</Text>
+          </Pressable>
+        </View>
+        {fullTestReport && <View>
+          {fullTestReport.hops.map((hop, index) => (
+            <StatusLine key={`${hop.hop}-${index}`} label={hop.hop} value={hop.status} />
+          ))}
+        </View>}
+        <View style={styles.controlRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Mute upcoming TTS"
+            accessibilityState={{disabled: !canOperateQueue || !ttsEntitled}}
+            disabled={!canOperateQueue || !ttsEntitled}
+            onPress={() => canOperateQueue && ttsEntitled && selectedQueue && onMuteTts?.(selectedQueue.queueId, true)}
+            style={({pressed}) => [styles.secondaryButton, (!canOperateQueue || !ttsEntitled) && styles.disabledSecondaryButton, pressed && canOperateQueue && ttsEntitled && styles.pressedButton]}>
+            <Text style={styles.secondaryButtonText}>Mute upcoming TTS</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Unmute upcoming TTS"
+            accessibilityState={{disabled: !canOperateQueue || !ttsEntitled}}
+            disabled={!canOperateQueue || !ttsEntitled}
+            onPress={() => canOperateQueue && ttsEntitled && selectedQueue && onMuteTts?.(selectedQueue.queueId, false)}
+            style={({pressed}) => [styles.secondaryButton, (!canOperateQueue || !ttsEntitled) && styles.disabledSecondaryButton, pressed && canOperateQueue && ttsEntitled && styles.pressedButton]}>
+            <Text style={styles.secondaryButtonText}>Unmute</Text>
+          </Pressable>
+        </View>
+        <View style={styles.controlRow}>
+          <TextInput
+            accessibilityLabel="Delivery id to cancel"
+            placeholder="Delivery id (currently playing)"
+            editable={canOperateQueue && ttsEntitled}
+            value={cancelDeliveryInput}
+            onChangeText={setCancelDeliveryInput}
+            style={styles.textInput}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Cancel currently-playing TTS"
+            accessibilityState={{disabled: !canOperateQueue || !ttsEntitled || cancelDeliveryInput.length === 0}}
+            disabled={!canOperateQueue || !ttsEntitled || cancelDeliveryInput.length === 0}
+            onPress={() => { if (canOperateQueue && ttsEntitled && cancelDeliveryInput.length > 0) { onCancelTts?.(cancelDeliveryInput); setCancelDeliveryInput(''); } }}
+            style={({pressed}) => [styles.secondaryButton, (!canOperateQueue || !ttsEntitled || cancelDeliveryInput.length === 0) && styles.disabledSecondaryButton, pressed && canOperateQueue && ttsEntitled && cancelDeliveryInput.length > 0 && styles.pressedButton]}>
+            <Text style={styles.secondaryButtonText}>Cancel playing TTS</Text>
+          </Pressable>
+        </View>
+        {!ttsEntitled && <Text style={styles.helperText}>TTS controls are not enabled for this account&apos;s plan.</Text>}
+      </View>}
+
       {activeScreen === 'activity' && <View style={styles.card} accessibilityRole="summary">
         <Text style={styles.cardTitle}>Recent alert activity</Text>
-        {history.length === 0 ? <Text style={styles.helperText}>No recent activity is available for this channel.</Text> : history.slice(0, 20).map(item => <View key={item.eventId} style={styles.activityRow}><View style={styles.activityCopy}><Text style={styles.infoTitle}>{item.displayName ?? item.sourceType}</Text><Text style={styles.infoBody}>{item.message ?? 'No message'} · {item.status}</Text></View><Text style={styles.activityTime}>{new Date(item.createdAt).toLocaleDateString('en-IN')}</Text></View>)}
+        {history.length === 0 ? <Text style={styles.helperText}>No recent activity is available for this channel.</Text> : history.slice(0, 20).map(item => (
+          <View key={item.eventId} style={styles.activityRow}>
+            <View style={styles.activityCopy}>
+              <Text style={styles.infoTitle}>{item.displayName ?? item.sourceType}</Text>
+              <Text style={styles.infoBody}>{item.message ?? 'No message'} · {item.status}</Text>
+              {/* Item 6-7: approve/reject for approval-mode (held) items,
+                  with an inline reason form -- never window.prompt. */}
+              {item.status === 'held' && canModerate && <View style={styles.controlRow}>
+                <TextInput
+                  accessibilityLabel={`Moderation reason for ${item.eventId}`}
+                  placeholder="Reason (optional)"
+                  value={moderationReasons[item.eventId] ?? ''}
+                  onChangeText={value => setModerationReasons(prev => ({...prev, [item.eventId]: value}))}
+                  style={styles.textInput}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Approve ${item.eventId}`}
+                  onPress={() => onModerate?.(item.eventId, 'approve', moderationReasons[item.eventId] || undefined)}
+                  style={styles.smallButton}>
+                  <Text style={styles.smallButtonText}>Approve</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Reject ${item.eventId}`}
+                  onPress={() => onModerate?.(item.eventId, 'suppress', moderationReasons[item.eventId] || undefined)}
+                  style={styles.smallButton}>
+                  <Text style={styles.smallButtonText}>Reject</Text>
+                </Pressable>
+              </View>}
+            </View>
+            <Text style={styles.activityTime}>{new Date(item.createdAt).toLocaleDateString('en-IN')}</Text>
+          </View>
+        ))}
+        {history.some(item => item.status === 'held') && !canModerate && <Text style={styles.helperText}>Your role can view held items but cannot approve or reject them.</Text>}
+        {lastModerationResult && <Text style={styles.helperText}>Last moderation: {lastModerationResult.action} at {new Date(lastModerationResult.appliedAt).toLocaleTimeString('en-IN')}.</Text>}
         <Text style={styles.helperText}>History is server-projected and role-scoped. Companion does not remove accepted payment or alert evidence.</Text>
       </View>}
 
+      {/* Item 8: recent tips, donor-visibility-scoped by the server -- a
+          field the caller's role cannot see arrives as null, not omitted. */}
+      {activeScreen === 'activity' && <View style={styles.card} accessibilityRole="summary">
+        <Text style={styles.cardTitle}>Recent tips</Text>
+        {!recentTips || recentTips.items.length === 0
+          ? <Text style={styles.helperText}>No recent tips are available for this channel.</Text>
+          : recentTips.items.map(item => (
+            <View key={item.eventId} style={styles.activityRow}>
+              <View style={styles.activityCopy}>
+                <Text style={styles.infoTitle}>{item.displayName ?? 'Supporter'}</Text>
+                <Text style={styles.infoBody}>{item.message ?? 'No message'}{item.grossAmountPaise !== null ? ` · ₹${(item.grossAmountPaise / 100).toFixed(2)}` : ''}</Text>
+              </View>
+              <Text style={styles.activityTime}>{new Date(item.createdAt).toLocaleDateString('en-IN')}</Text>
+            </View>
+          ))}
+      </View>}
+
+      {/* Items 9-10: payment and refund status, read-only, finance-role gated. */}
+      {activeScreen === 'activity' && <View style={styles.card} accessibilityRole="summary">
+        <Text style={styles.cardTitle}>Payment &amp; refund status</Text>
+        {!paymentStatus || paymentStatus.items.length === 0
+          ? <Text style={styles.helperText}>No payment records are visible to your role, or none exist yet.</Text>
+          : paymentStatus.items.map(item => (
+            <View key={item.paymentId} style={styles.activityRow}>
+              <View style={styles.activityCopy}>
+                <Text style={styles.infoTitle}>₹{(item.grossAmountPaise / 100).toFixed(2)} · {item.status}</Text>
+                <Text style={styles.infoBody}>{item.refundStatus ? `Refund: ${item.refundStatus}` : 'No refund'}</Text>
+              </View>
+              <Text style={styles.activityTime}>{new Date(item.updatedAt).toLocaleDateString('en-IN')}</Text>
+            </View>
+          ))}
+      </View>}
+
+      {/* Item 1: stream health panel -- coherent signals derived from
+          get_companion_state, not raw booleans. A stale OBS heartbeat
+          reads as its own 'stale' state, distinguishable from both
+          'healthy' and the honest 'unknown' Mirror/Stream carry today. */}
       {activeScreen === 'health' && <View style={styles.card} accessibilityRole="summary">
-        <Text style={styles.cardTitle}>Connection health</Text>
-        <StatusLine label="Overlay" value={selectedState?.overlayConnected ? 'Connected' : 'Not connected'} />
-        <StatusLine label="Pending delivery" value={selectedState ? String(selectedState.pendingAlerts) : 'Unavailable'} />
-        <StatusLine label="Last server update" value={selectedState ? new Date(selectedState.lastUpdatedAt).toLocaleString('en-IN') : 'Unavailable'} />
-        <Text style={styles.helperText}>This screen reports only server-owned state. Local OBS health appears after the paired desktop helper is implemented.</Text>
+        <Text style={styles.cardTitle}>Stream health</Text>
+        {selectedState ? companionHealthSignals(selectedState).map(signal => (
+          <View key={signal.key} style={styles.statusLine} accessibilityLabel={`${signal.label}: ${signal.state}`}>
+            <View style={styles.activityCopy}>
+              <Text style={styles.infoTitle}>{signal.label}</Text>
+              <Text style={styles.infoBody}>{signal.detail}</Text>
+            </View>
+            <Text style={[styles.healthBadge, healthBadgeStyle(signal.state)]}>{signal.state}</Text>
+          </View>
+        )) : <Text style={styles.helperText}>Channel state is temporarily unavailable.</Text>}
+        <Text style={styles.helperText}>This screen reports only server-owned state. A stale signal reads unhealthy, never as no-data.</Text>
       </View>}
 
       {activeScreen === 'settings' && <View style={styles.card} accessibilityRole="summary">
@@ -305,6 +564,13 @@ function NotificationToggle({label, value, onChange}: {label: string; value: boo
 
 function StatusLine({label, value}: {label: string; value: string}) {
   return <View style={styles.statusLine}><Text style={styles.infoTitle}>{label}</Text><Text style={styles.infoBody}>{value}</Text></View>;
+}
+
+function healthBadgeStyle(state: 'healthy' | 'unhealthy' | 'stale' | 'unknown') {
+  if (state === 'healthy') return styles.healthBadgeHealthy;
+  if (state === 'stale') return styles.healthBadgeStale;
+  if (state === 'unknown') return styles.healthBadgeUnknown;
+  return styles.healthBadgeUnhealthy;
 }
 
 function InfoCard({title, body}: {title: string; body: string}) {
@@ -502,6 +768,16 @@ const styles = StyleSheet.create({
   disabledSecondaryButton: {
     opacity: 0.45,
   },
+  textInput: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#B7C2D8',
+    minHeight: 46,
+    paddingHorizontal: 12,
+    color: '#243250',
+    fontSize: 13,
+  },
   secondaryButtonText: {
     color: '#243250',
     fontSize: 13,
@@ -521,6 +797,32 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#E2E6EE',
     paddingVertical: 12,
+  },
+  healthBadge: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  healthBadgeHealthy: {
+    color: '#0F7A3D',
+    backgroundColor: '#DFF3E6',
+  },
+  healthBadgeUnhealthy: {
+    color: '#B3261E',
+    backgroundColor: '#FBE1DF',
+  },
+  healthBadgeStale: {
+    color: '#8A5A00',
+    backgroundColor: '#FBEBCF',
+  },
+  healthBadgeUnknown: {
+    color: '#5B6475',
+    backgroundColor: '#E7EAF0',
   },
   activityRow: {
     flexDirection: 'row',

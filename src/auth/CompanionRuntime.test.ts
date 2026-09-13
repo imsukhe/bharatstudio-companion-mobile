@@ -73,7 +73,7 @@ test('loads only the server-owned channel projections after authentication', asy
   const channelId = '22222222-2222-4222-8222-222222222222';
   const fetchImpl: FetchLike = jest.fn(async (input) => {
     const url = String(input);
-    if (url.endsWith('/companion/state')) return response({schemaVersion: 'v1', channelId, overlayConnected: true, pendingAlerts: 2, lastUpdatedAt: '2026-08-15T00:00:00.000Z'});
+    if (url.endsWith('/companion/state')) return response({schemaVersion: 'v1', channelId, overlayConnected: true, pendingAlerts: 2, lastUpdatedAt: '2026-08-15T00:00:00.000Z', helperPaired: false, obsConnected: false, obsStatusReportedAt: null, paymentAccountConnected: false, mirrorReachable: false, streamPaired: false});
     if (url.endsWith('/queues')) return response({schemaVersion: 'v1', queues: [{schemaVersion: 'v1', queueId: '33333333-3333-4333-8333-333333333333', channelId, name: 'Main', paused: false, active: true}]});
     if (url.endsWith('/alert-history')) return response({schemaVersion: 'v1', items: [], nextCursor: null});
     if (url.endsWith('/billing')) return response({schemaVersion: 'v1', channelId, tier: 'creator', monthlyPricePaise: 39900, annualMonthsCharged: 10, annualServiceMonths: 12, renewalState: 'active', nextRenewalAt: null, billingInterval: 'monthly', autoRenew: true, currentPeriodEndsAt: null, priceProtectedUntil: null, priceSource: 'current'});
